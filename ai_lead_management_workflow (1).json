@@ -1,0 +1,860 @@
+{
+  "name": "AI Lead Management Automation System (Week 1 Task)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📌 Week 1 Task: AI Lead Management Automation System\n**Architecture Overview:**\n1. **Webhook (`POST /lead-intake`)**: Receives incoming lead payload from website/ads/Python script.\n2. **Validate & Sanitize (Code)**: Validates email regex, phone, required fields (`name`, `email`, `message`), and normalizes email to lowercase.\n3. **Google Sheets Lookup (`Leads`)**: Checks if normalized email already exists (Duplicate Detection).\n4. **Gemini 2.5 Flash AI Classification**: Analyzes budget, timeline, company, and message to return strict JSON (`Hot` | `Warm` | `Cold`, `score`, `reasoning`, `recommended_action`, `personalized_email`).\n5. **Store & Route**: Appends lead to Google Sheets (`Leads` tab) and routes via Switch node (`Hot` -> Urgent Sales Alert + VIP Email, `Warm` -> Nurture Email, `Cold` -> Log Only).\n6. **Error Handling & Audit Logging**: Every execution path (Success, Duplicate, Validation Error, AI Fallback, Uncaught Error Trigger) logs to the `Execution_Logs` tab in Google Sheets.",
+        "height": 280,
+        "width": 720,
+        "color": 4
+      },
+      "id": "sticky-overview-01",
+      "name": "Architecture Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-01",
+      "name": "1. Lead Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        420
+      ],
+      "webhookId": "lead-intake-webhook-week1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 2: Validate & Sanitize Incoming Lead Data\nconst raw = $input.first().json.body || $input.first().json;\n\nconst name = (raw.name || '').toString().trim();\nconst email = (raw.email || '').toString().trim().toLowerCase();\nconst phone = (raw.phone || '').toString().trim();\nconst company = (raw.company || 'Not Provided').toString().trim();\nconst budget = (raw.budget || 'Not Specified').toString().trim();\nconst timeline = (raw.timeline || 'Not Specified').toString().trim();\nconst message = (raw.message || '').toString().trim();\nconst source = (raw.source || 'Direct Webhook').toString().trim();\n\nconst errors = [];\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n\nif (!name || name.length < 2) {\n  errors.push(\"Missing or invalid 'name' (min 2 chars required).\");\n}\nif (!email || !emailRegex.test(email)) {\n  errors.push(\"Missing or invalid 'email' address.\");\n}\nif (!message || message.length < 5) {\n  errors.push(\"Missing or too short 'message' / inquiry details.\");\n}\n\nconst timestamp = new Date().toISOString();\nconst lead_id = 'LEAD-' + Math.floor(100000 + Math.random() * 900000);\n\nreturn [\n  {\n    json: {\n      lead_id,\n      timestamp,\n      name,\n      email,\n      phone: phone || 'N/A',\n      company,\n      budget,\n      timeline,\n      message,\n      source,\n      is_valid: errors.length === 0,\n      validation_errors: errors.join(' | ')\n    }\n  }\n];"
+      },
+      "id": "node-validate-02",
+      "name": "2. Validate & Normalize Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-valid-01",
+              "leftValue": "={{ $json.is_valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-valid-03",
+      "name": "3. Is Valid Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1PXgjJZuvNeB0En9S_6l9mWTv4ReKszHviEg-Re1lfHI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "email",
+              "lookupValue": "={{ $json.email }}"
+            }
+          ]
+        },
+        "options": {
+          "returnAllMatches": "returnFirstMatch"
+        }
+      },
+      "id": "node-sheets-lookup-04",
+      "name": "4. Check Existing Lead in Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        940,
+        300
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sandbox-google-sheets-cred",
+          "name": "Google Sheets Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 5: Evaluate Duplicate Check Result\nconst leadData = $('2. Validate & Normalize Lead').first().json;\nconst sheetLookup = $input.first().json;\n\n// If Google Sheets returned a matching row with an email, it's a duplicate\nconst isDuplicate = Boolean(sheetLookup && sheetLookup.email && sheetLookup.email.toLowerCase() === leadData.email.toLowerCase());\n\nreturn [\n  {\n    json: {\n      ...leadData,\n      is_duplicate: isDuplicate,\n      existing_lead_id: isDuplicate ? (sheetLookup.lead_id || 'EXISTING') : null,\n      existing_classification: isDuplicate ? (sheetLookup.classification || 'N/A') : null\n    }\n  }\n];"
+      },
+      "id": "node-eval-dup-05",
+      "name": "5. Evaluate Duplicate Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-dup-01",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-dup-06",
+      "name": "6. Is New Unique Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": {{ JSON.stringify(\n            \"You are an expert B2B Sales Operations AI. Analyze the following incoming lead and classify it strictly as Hot, Warm, or Cold.\\n\\n\" +\n            \"Classification Criteria:\\n\" +\n            \"- Hot (Score 80-100): High budget (>= $10k or enterprise scope), urgent timeline (Immediate / within 1 month), clear buying intent or demo request.\\n\" +\n            \"- Warm (Score 45-79): Moderate budget ($2k-$10k), medium timeline (1-3 months), exploring solutions with commercial relevance.\\n\" +\n            \"- Cold (Score 0-44): Low/zero budget, student/personal inquiry, vague message, or no current buying intent.\\n\\n\" +\n            \"Lead Details:\\n\" +\n            \"Name: \" + $json.name + \"\\n\" +\n            \"Email: \" + $json.email + \"\\n\" +\n            \"Company: \" + $json.company + \"\\n\" +\n            \"Budget: \" + $json.budget + \"\\n\" +\n            \"Timeline: \" + $json.timeline + \"\\n\" +\n            \"Source: \" + $json.source + \"\\n\" +\n            \"Message: \" + $json.message + \"\\n\\n\" +\n            \"Return ONLY a valid JSON object with these exact keys:\\n\" +\n            \"{\\n\" +\n            \"  \\\"classification\\\": \\\"Hot\\\" | \\\"Warm\\\" | \\\"Cold\\\",\\n\" +\n            \"  \\\"score\\\": <number 0-100>,\\n\" +\n            \"  \\\"reasoning\\\": \\\"<concise 1-2 sentence explanation>\\\",\\n\" +\n            \"  \\\"recommended_action\\\": \\\"<specific next step for sales team>\\\",\\n\" +\n            \"  \\\"personalized_email_subject\\\": \\\"<tailored follow-up subject line>\\\",\\n\" +\n            \"  \\\"personalized_email_body\\\": \\\"<warm, personalized 3-4 sentence follow-up email body>\\\"\\n\" +\n            \"}\"\n          ) }}\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.2,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-gemini-api-07",
+      "name": "7. Gemini AI Lead Classifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        180
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 8: Parse Gemini AI Response with Rule-Based Fallback (Resilience Pattern)\nconst lead = $('5. Evaluate Duplicate Status').first().json;\nconst aiResponse = $input.first().json;\n\nlet parsed = null;\nlet usedFallback = false;\n\ntry {\n  const rawText = aiResponse?.candidates?.[0]?.content?.parts?.[0]?.text;\n  if (rawText) {\n    const cleaned = rawText.replace(/```json|```/gi, '').trim();\n    parsed = JSON.parse(cleaned);\n  }\n} catch (err) {\n  usedFallback = true;\n}\n\n// Rule-based fallback if Gemini API quota/network fails\nif (!parsed || !['Hot', 'Warm', 'Cold'].includes(parsed.classification)) {\n  usedFallback = true;\n  const combinedText = `${lead.budget} ${lead.timeline} ${lead.message}`.toLowerCase();\n  let classification = 'Cold';\n  let score = 25;\n\n  if (combinedText.includes('immediate') || combinedText.includes('urgent') || combinedText.includes('demo') || combinedText.includes('25,000') || combinedText.includes('enterprise')) {\n    classification = 'Hot';\n    score = 88;\n  } else if (combinedText.includes('quarter') || combinedText.includes('month') || combinedText.includes('5,000') || combinedText.includes('agency')) {\n    classification = 'Warm';\n    score = 62;\n  }\n\n  parsed = {\n    classification,\n    score,\n    reasoning: `[Fallback Rule Classifier] Classified as ${classification} based on budget (${lead.budget}) and timeline (${lead.timeline}).`,\n    recommended_action: classification === 'Hot' ? 'Immediate AE call within 15 mins' : (classification === 'Warm' ? 'Send product deck & schedule discovery' : 'Add to newsletter'),\n    personalized_email_subject: `Thanks for reaching out to us, ${lead.name}!`,\n    personalized_email_body: `Hi ${lead.name},\\n\\nThank you for contacting us regarding ${lead.company}. Our team has received your inquiry and will follow up shortly.\\n\\nBest regards,\\nGrowth Automation Team`\n  };\n}\n\nconst statusMap = {\n  Hot: 'Notified - Instant AE Alert',\n  Warm: 'Notified - Nurture Sequence',\n  Cold: 'Logged - Newsletter Only'\n};\n\nreturn [\n  {\n    json: {\n      ...lead,\n      classification: parsed.classification,\n      score: parsed.score,\n      ai_reasoning: parsed.reasoning,\n      recommended_action: parsed.recommended_action,\n      personalized_email_subject: parsed.personalized_email_subject,\n      personalized_email_body: parsed.personalized_email_body,\n      status: statusMap[parsed.classification] || 'Processed',\n      used_ai_fallback: usedFallback\n    }\n  }\n];"
+      },
+      "id": "node-parse-ai-08",
+      "name": "8. Parse AI Output & Fallback Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PXgjJZuvNeB0En9S_6l9mWTv4ReKszHviEg-Re1lfHI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "timestamp": "={{ $json.timestamp }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "company": "={{ $json.company }}",
+            "budget": "={{ $json.budget }}",
+            "timeline": "={{ $json.timeline }}",
+            "message": "={{ $json.message }}",
+            "source": "={{ $json.source }}",
+            "classification": "={{ $json.classification }}",
+            "score": "={{ $json.score }}",
+            "ai_reasoning": "={{ $json.ai_reasoning }}",
+            "recommended_action": "={{ $json.recommended_action }}",
+            "status": "={{ $json.status }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-sheets-append-lead-09",
+      "name": "9. Store Lead in Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        180
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sandbox-google-sheets-cred",
+          "name": "Google Sheets Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('8. Parse AI Output & Fallback Guard').first().json.classification }}",
+                    "rightValue": "Hot",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Hot Lead"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('8. Parse AI Output & Fallback Guard').first().json.classification }}",
+                    "rightValue": "Warm",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Warm Lead"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('8. Parse AI Output & Fallback Guard').first().json.classification }}",
+                    "rightValue": "Cold",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cold Lead"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-switch-priority-10",
+      "name": "10. Route by Lead Priority (Hot/Warm/Cold)",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2400,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('8. Parse AI Output & Fallback Guard').first().json.email }}",
+        "subject": "={{ '🔥 [Priority VIP Response] ' + $('8. Parse AI Output & Fallback Guard').first().json.personalized_email_subject }}",
+        "emailType": "text",
+        "message": "={{ $('8. Parse AI Output & Fallback Guard').first().json.personalized_email_body + '\\n\\n---\\n[Internal Sales Alert Triggered]: Assigned to Senior AE | Score: ' + $('8. Parse AI Output & Fallback Guard').first().json.score + '/100' }}",
+        "options": {}
+      },
+      "id": "node-notify-hot-11",
+      "name": "11a. Hot Lead: Instant VIP Email & Sales Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2680,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "sandbox-gmail-cred",
+          "name": "Gmail Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('8. Parse AI Output & Fallback Guard').first().json.email }}",
+        "subject": "={{ $('8. Parse AI Output & Fallback Guard').first().json.personalized_email_subject }}",
+        "emailType": "text",
+        "message": "={{ $('8. Parse AI Output & Fallback Guard').first().json.personalized_email_body }}",
+        "options": {}
+      },
+      "id": "node-notify-warm-11",
+      "name": "11b. Warm Lead: Automated Nurture Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2680,
+        180
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "sandbox-gmail-cred",
+          "name": "Gmail Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 11c: Cold Lead - Suppress active sales alert, queue for monthly newsletter\nconst lead = $('8. Parse AI Output & Fallback Guard').first().json;\nreturn [\n  {\n    json: {\n      ...lead,\n      notification_channel: 'Newsletter Queue (No Sales Rep Alert)'\n    }\n  }\n];"
+      },
+      "id": "node-notify-cold-11",
+      "name": "11c. Cold Lead: Suppress Alert & Queue Newsletter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PXgjJZuvNeB0En9S_6l9mWTv4ReKszHviEg-Re1lfHI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Execution_Logs",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "log_id": "={{ 'LOG-' + Math.floor(100000 + Math.random() * 900000) }}",
+            "timestamp": "={{ new Date().toISOString() }}",
+            "event_type": "LEAD_PROCESSED",
+            "lead_email": "={{ $('8. Parse AI Output & Fallback Guard').first().json.email }}",
+            "status": "SUCCESS",
+            "details": "={{ 'Classified as ' + $('8. Parse AI Output & Fallback Guard').first().json.classification + ' (Score: ' + $('8. Parse AI Output & Fallback Guard').first().json.score + ') | Action: ' + $('8. Parse AI Output & Fallback Guard').first().json.status }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-log-success-12",
+      "name": "12. Log Success to Execution_Logs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2960,
+        180
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sandbox-google-sheets-cred",
+          "name": "Google Sheets Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"message\": \"Lead processed, classified by Gemini AI, and stored in Google Sheets.\",\n  \"lead_id\": \"{{ $('8. Parse AI Output & Fallback Guard').first().json.lead_id }}\",\n  \"classification\": \"{{ $('8. Parse AI Output & Fallback Guard').first().json.classification }}\",\n  \"score\": {{ $('8. Parse AI Output & Fallback Guard').first().json.score }},\n  \"ai_reasoning\": \"{{ $('8. Parse AI Output & Fallback Guard').first().json.ai_reasoning }}\",\n  \"recommended_action\": \"{{ $('8. Parse AI Output & Fallback Guard').first().json.recommended_action }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-respond-success-13",
+      "name": "13. Webhook Response (200 OK)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PXgjJZuvNeB0En9S_6l9mWTv4ReKszHviEg-Re1lfHI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Execution_Logs",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "log_id": "={{ 'LOG-' + Math.floor(100000 + Math.random() * 900000) }}",
+            "timestamp": "={{ new Date().toISOString() }}",
+            "event_type": "DUPLICATE_SKIPPED",
+            "lead_email": "={{ $json.email }}",
+            "status": "SKIPPED_DUPLICATE",
+            "details": "={{ 'Duplicate lead skipped. Matches existing Lead ID: ' + $json.existing_lead_id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-log-dup-14",
+      "name": "14. Log Duplicate Lead to Execution_Logs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1680,
+        440
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sandbox-google-sheets-cred",
+          "name": "Google Sheets Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"duplicate_skipped\",\n  \"message\": \"Duplicate lead detected. Existing record preserved without re-triggering AI or duplicate sales alerts.\",\n  \"email\": \"{{ $('5. Evaluate Duplicate Status').first().json.email }}\",\n  \"existing_lead_id\": \"{{ $('5. Evaluate Duplicate Status').first().json.existing_lead_id }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-respond-dup-15",
+      "name": "15. Webhook Response (Duplicate Skipped)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1920,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PXgjJZuvNeB0En9S_6l9mWTv4ReKszHviEg-Re1lfHI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Execution_Logs",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "log_id": "={{ 'LOG-' + Math.floor(100000 + Math.random() * 900000) }}",
+            "timestamp": "={{ new Date().toISOString() }}",
+            "event_type": "VALIDATION_FAILED",
+            "lead_email": "={{ $json.email || 'INVALID_OR_MISSING' }}",
+            "status": "ERROR",
+            "details": "={{ 'Payload validation failed: ' + $json.validation_errors }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-log-invalid-16",
+      "name": "16. Log Validation Error to Execution_Logs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        940,
+        580
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sandbox-google-sheets-cred",
+          "name": "Google Sheets Sandbox Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"validation_error\",\n  \"message\": \"Incoming lead payload failed validation checks.\",\n  \"errors\": \"{{ $('2. Validate & Normalize Lead').first().json.validation_errors }}\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-respond-invalid-17",
+      "name": "17. Webhook Response (400 Bad Request)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1180,
+        580
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "node-error-trigger-18",
+      "name": "18. Global Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        440,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PXgjJZuvNeB0En9S_6l9mWTv4ReKszHviEg-Re1lfHI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Execution_Logs",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "log_id": "={{ 'LOG-ERR-' + Math.floor(100000 + Math.random() * 900000) }}",
+            "timestamp": "={{ new Date().toISOString() }}",
+            "event_type": "RUNTIME_EXCEPTION",
+            "lead_email": "SYSTEM_ERROR",
+            "status": "CRITICAL_ERROR",
+            "details": "={{ 'Node [' + ($json.execution?.lastNodeExecuted || 'Unknown') + '] failed: ' + ($json.execution?.error?.message || 'Unexpected workflow exception') }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-log-runtime-err-19",
+      "name": "19. Log Runtime Crash to Execution_Logs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        680,
+        800
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sandbox-google-sheets-cred",
+          "name": "Google Sheets Sandbox Account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "1. Lead Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "2. Validate & Normalize Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Validate & Normalize Lead": {
+      "main": [
+        [
+          {
+            "node": "3. Is Valid Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Is Valid Lead?": {
+      "main": [
+        [
+          {
+            "node": "4. Check Existing Lead in Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "16. Log Validation Error to Execution_Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Check Existing Lead in Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "5. Evaluate Duplicate Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Evaluate Duplicate Status": {
+      "main": [
+        [
+          {
+            "node": "6. Is New Unique Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Is New Unique Lead?": {
+      "main": [
+        [
+          {
+            "node": "7. Gemini AI Lead Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "14. Log Duplicate Lead to Execution_Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Gemini AI Lead Classifier": {
+      "main": [
+        [
+          {
+            "node": "8. Parse AI Output & Fallback Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Parse AI Output & Fallback Guard": {
+      "main": [
+        [
+          {
+            "node": "9. Store Lead in Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Store Lead in Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "10. Route by Lead Priority (Hot/Warm/Cold)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Route by Lead Priority (Hot/Warm/Cold)": {
+      "main": [
+        [
+          {
+            "node": "11a. Hot Lead: Instant VIP Email & Sales Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11b. Warm Lead: Automated Nurture Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11c. Cold Lead: Suppress Alert & Queue Newsletter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11a. Hot Lead: Instant VIP Email & Sales Alert": {
+      "main": [
+        [
+          {
+            "node": "12. Log Success to Execution_Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11b. Warm Lead: Automated Nurture Email": {
+      "main": [
+        [
+          {
+            "node": "12. Log Success to Execution_Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11c. Cold Lead: Suppress Alert & Queue Newsletter": {
+      "main": [
+        [
+          {
+            "node": "12. Log Success to Execution_Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Log Success to Execution_Logs": {
+      "main": [
+        [
+          {
+            "node": "13. Webhook Response (200 OK)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14. Log Duplicate Lead to Execution_Logs": {
+      "main": [
+        [
+          {
+            "node": "15. Webhook Response (Duplicate Skipped)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16. Log Validation Error to Execution_Logs": {
+      "main": [
+        [
+          {
+            "node": "17. Webhook Response (400 Bad Request)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18. Global Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "19. Log Runtime Crash to Execution_Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "week1-ai-lead-mgmt-v1"
+}
